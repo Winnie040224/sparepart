@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "550210838458",
+    "firebase_url": "https://spare-part-app-318bc-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "spare-part-app-318bc",
+    "storage_bucket": "spare-part-app-318bc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:550210838458:android:349483f95ea1641b760783",
+        "android_client_info": {
+          "package_name": "com.example.spacepart"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCyvjNbZ7wjT-kZkvFh6SZimmPTb_4e50A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

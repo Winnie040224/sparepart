@@ -1,18 +1,27 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 
-import 'home.dart';
+import 'search_page.dart';
 
-void main() {
-  runApp(MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform, // ← 用这里的配置
+  );
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+  static const demoWarehouseId = 'A';
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Warehouse Mobile App',
-      home: HomePage(), // ← 加载 HomePage 作为首页
+      title: 'Warehouse Search',
+      theme: ThemeData(useMaterial3: true),
+      home: const SearchPage(currentWarehouseId: demoWarehouseId),
     );
   }
 }
