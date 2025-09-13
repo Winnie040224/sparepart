@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:spacepart/home.dart';
 import 'firebase_options.dart';
 
 import 'search_page.dart';
@@ -21,7 +22,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Warehouse Search',
       theme: ThemeData(useMaterial3: true),
-      home: const SearchPage(currentWarehouseId: demoWarehouseId),
+      home: const HomePage(currentWarehouseId: demoWarehouseId),
     );
   }
 }
