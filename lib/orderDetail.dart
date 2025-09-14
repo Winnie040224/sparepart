@@ -12,7 +12,6 @@ class OrderDetailPage extends StatefulWidget {
 
 class _OrderDetailPageState extends State<OrderDetailPage> {
   bool _scanMode = false; // 仅 pending 时按 Continue 进入扫描模式
-  int? _activeSession;    // ★ 本地覆盖当前扫描批次（等待服务端回流时用）
 
   String _fmtDate(dynamic v) {
     if (v == null) return '-';
@@ -41,12 +40,65 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
   String _normStatus(dynamic s) =>
       (s ?? 'pending').toString().trim().toLowerCase().replaceAll(' ', '_');
 
+  // ---------- Stock helpers (stocks/{warehouseId}_{productId}) ----------
+  final _db = FirebaseFirestore.instance;
+
+  Future<int> _getStockQty({
+    required String warehouseId,
+    required String productId,
+  }) async {
+    final docId = '${warehouseId}_$productId';
+    final snap = await _db.collection('stocks').doc(docId).get();
+    if (!snap.exists) return 0;
+    final m = snap.data() as Map<String, dynamic>? ?? {};
+    // 你的结构是 locations: [ { quantity: 150, ... }, ... ]
+    final List locs = (m['locations'] as List?) ?? const [];
+    int sum = 0;
+    for (final e in locs) {
+      if (e is Map && e['quantity'] != null) {
+        final q = (e['quantity'] as num).toInt();
+        sum += q;
+      }
+    }
+    // 兜底：有些文档可能直接有 quantity 字段
+    if (sum == 0 && m['quantity'] != null) {
+      sum = (m['quantity'] as num).toInt();
+    }
+    return sum;
+  }
+
+  Future<bool> _allStockAvailable({
+    required String warehouseId,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> itemDocs,
+  }) async {
+    for (final d in itemDocs) {
+      final m = d.data();
+      final productId = (m['productId'] ?? m['id'] ?? '').toString();
+      final need = (m['qtyRequested'] ?? 0) as num;
+      final have = await _getStockQty(warehouseId: warehouseId, productId: productId);
+      if (have < need) return false;
+    }
+    return itemDocs.isNotEmpty;
+  }
+
+  Future<bool> _anyNotAvailable({
+    required String warehouseId,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> itemDocs,
+  }) async {
+    for (final d in itemDocs) {
+      final m = d.data();
+      final productId = (m['productId'] ?? m['id'] ?? '').toString();
+      final need = (m['qtyRequested'] ?? 0) as num;
+      final have = await _getStockQty(warehouseId: warehouseId, productId: productId);
+      if (have < need) return true;
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final requestId =
-    (widget.request['requestId'] ?? widget.request['id']).toString();
-    final requestDocRef =
-    FirebaseFirestore.instance.collection('requests').doc(requestId);
+    final requestId = (widget.request['requestId'] ?? widget.request['id']).toString();
+    final requestDocRef = _db.collection('requests').doc(requestId);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF2F2F2),
@@ -57,7 +109,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
         elevation: 0,
       ),
 
-      // 先监听父文档，实时拿 status + scanSession
+      // 先监听父文档，实时拿 status/fromWarehouseId
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: requestDocRef.snapshots(),
         builder: (context, reqSnap) {
@@ -69,15 +121,11 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
               : (status == 'rejected'
               ? const Color(0xFFD32F2F)
               : const Color(0xFFFF8F00));
+          final fromWh = (reqData['toWarehouseId'] ?? '').toString(); // ← 发货仓
 
-          // ★ 读取批次：以本地覆盖优先，其次取服务器
-          final int currentSessionFromDb = (reqData['scanSession'] ?? 0) as int;
-          final int session = _activeSession ?? currentSessionFromDb;
-
-          // 只有 pending 才允许扫描模式；如果状态已不是 pending，强制退出扫描模式并清 session 覆盖
+          // 只有 pending 才允许扫描模式；如果状态已不是 pending，强制退出扫描模式
           if (status != 'pending' && _scanMode) {
             _scanMode = false;
-            _activeSession = null; // ★ 清除本地覆盖
           }
 
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -85,28 +133,6 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
             builder: (context, snap) {
               final loading = !snap.hasData && !snap.hasError;
               final docs = snap.data?.docs ?? [];
-
-              // 缺货（pending 时显示提示用）
-              final anyNotAvailable = docs.any((d) {
-                final m = d.data();
-                final rec = (m['qtyReceived'] ?? 0) as num;
-                final reqq = (m['qtyRequested'] ?? 0) as num;
-                return rec < reqq;
-              });
-
-              // 初次 Continue 的“库存可继续”条件
-              final allAvailable = docs.isNotEmpty &&
-                  docs.every((d) {
-                    final m = d.data();
-                    final rec = (m['qtyReceived'] ?? 0) as num;
-                    final reqq = (m['qtyRequested'] ?? 0) as num;
-                    return rec >= reqq;
-                  });
-
-              // ★ 扫描模式下，判定“全部已完成扫描”（以批次号判断）
-              final allScanned = docs.isNotEmpty &&
-                  docs.every((d) =>
-                  ((d.data()['scanSessionDone'] ?? 0) as int) == session);
 
               return Column(
                 children: [
@@ -118,10 +144,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: const Color(0xFF90CAF9), width: 2),
                       boxShadow: const [
-                        BoxShadow(
-                            color: Colors.black12,
-                            blurRadius: 6,
-                            offset: Offset(0, 2))
+                        BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2))
                       ],
                     ),
                     child: Padding(
@@ -134,18 +157,15 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                               Expanded(
                                 child: RichText(
                                   text: TextSpan(
-                                    style: const TextStyle(
-                                        color: Colors.black87, fontSize: 14),
+                                    style: const TextStyle(color: Colors.black87, fontSize: 14),
                                     children: [
                                       const TextSpan(
                                         text: 'Order ID : ',
-                                        style: TextStyle(
-                                            fontWeight: FontWeight.w600),
+                                        style: TextStyle(fontWeight: FontWeight.w600),
                                       ),
                                       TextSpan(
                                         text: requestId,
-                                        style: const TextStyle(
-                                            fontWeight: FontWeight.w900),
+                                        style: const TextStyle(fontWeight: FontWeight.w900),
                                       ),
                                     ],
                                   ),
@@ -153,22 +173,16 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                               ),
                               Text(
                                 _titleCase(status.replaceAll('_', ' ')),
-                                style: TextStyle(
-                                    color: statusColor,
-                                    fontWeight: FontWeight.w900),
+                                style: TextStyle(color: statusColor, fontWeight: FontWeight.w900),
                               ),
                             ],
                           ),
                           const SizedBox(height: 12),
                           Row(
                             children: [
-                              Expanded(
-                                  child: _kv('Request Date',
-                                      _fmtDate(reqData['requestDate']))),
+                              Expanded(child: _kv('Request Date', _fmtDate(reqData['requestDate']))),
                               const SizedBox(width: 12),
-                              Expanded(
-                                  child: _kv('Expected Receive',
-                                      _fmtDate(reqData['expectedReceiveDate']))),
+                              Expanded(child: _kv('Expected Receive', _fmtDate(reqData['expectedReceiveDate']))),
                             ],
                           ),
                         ],
@@ -179,30 +193,20 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                   // 小节标题
                   Container(
                     margin: const EdgeInsets.symmetric(horizontal: 12),
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 10, horizontal: 12),
+                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                     decoration: const BoxDecoration(
                       color: Colors.white,
-                      borderRadius:
-                      BorderRadius.vertical(top: Radius.circular(12)),
-                      boxShadow: [
-                        BoxShadow(
-                            color: Colors.black12,
-                            blurRadius: 6,
-                            offset: Offset(0, 2))
-                      ],
+                      borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+                      boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2))],
                     ),
                     child: Row(
-                      children: [
+                      children: const [
                         Expanded(
-                          child: Text('Receiving Items (${docs.length})',
-                              style:
-                              const TextStyle(fontWeight: FontWeight.w800)),
+                          child: Text('Receiving Items ( )', // 数量在列表上面看不到就不强求
+                              style: TextStyle(fontWeight: FontWeight.w800)),
                         ),
-                        const Text('Quantity',
-                            style: TextStyle(
-                                color: Colors.black54,
-                                fontWeight: FontWeight.w600)),
+                        Text('Quantity',
+                            style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w600)),
                       ],
                     ),
                   ),
@@ -212,44 +216,26 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                     child: loading
                         ? const Center(child: CircularProgressIndicator())
                         : ListView.separated(
-                      padding:
-                      const EdgeInsets.fromLTRB(12, 0, 12, 0),
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
                       itemCount: docs.length,
-                      separatorBuilder: (_, __) =>
-                      const SizedBox(height: 8),
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
                       itemBuilder: (context, i) {
                         final ref = docs[i].reference;
                         final m = docs[i].data();
 
-                        final title =
-                        (m['productName'] ?? '').toString();
-                        final subtitle =
-                        _catLabel(m['categoryId']?.toString());
-                        final qty =
-                        (m['qtyRequested'] ?? 0).toString();
-
-                        final rec = (m['qtyReceived'] ?? 0) as num;
-                        final reqq = (m['qtyRequested'] ?? 0) as num;
-                        final available = rec >= reqq;
-
-                        // ★ 用批次判断是否完成
-                        final scanCompleted =
-                            ((m['scanSessionDone'] ?? 0) as int) ==
-                                session;
-
-                        final expectedBarcode =
-                        (m['productId'] ?? m['id'] ?? '')
-                            .toString();
+                        final title = (m['productName'] ?? '').toString();
+                        final subtitle = _catLabel(m['categoryId']?.toString());
+                        final qtyNeed = (m['qtyRequested'] ?? 0) as num;
+                        final scanCompleted = (m['scanCompleted'] ?? false) == true;
+                        final expectedBarcode = (m['productId'] ?? m['id'] ?? '').toString();
+                        final productId = expectedBarcode;
 
                         return Container(
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(12),
                             boxShadow: const [
-                              BoxShadow(
-                                  color: Colors.black12,
-                                  blurRadius: 6,
-                                  offset: Offset(0, 2))
+                              BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2))
                             ],
                           ),
                           padding: const EdgeInsets.all(12),
@@ -258,129 +244,106 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                               Row(
                                 children: [
                                   ClipRRect(
-                                    borderRadius:
-                                    BorderRadius.circular(10),
+                                    borderRadius: BorderRadius.circular(10),
                                     child: Container(
                                       width: 56,
                                       height: 56,
                                       color: const Color(0xFFF0F0F0),
-                                      child: const Icon(Icons.image,
-                                          color: Colors.black45),
+                                      child: const Icon(Icons.image, color: Colors.black45),
                                     ),
                                   ),
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment:
-                                      CrossAxisAlignment.start,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(
-                                          title.isEmpty
-                                              ? 'Unnamed Item'
-                                              : title,
+                                          title.isEmpty ? 'Unnamed Item' : title,
                                           style: const TextStyle(
                                             color: Color(0xFF1976D2),
-                                            fontWeight:
-                                            FontWeight.w800,
+                                            fontWeight: FontWeight.w800,
                                           ),
                                         ),
                                         const SizedBox(height: 4),
-                                        Text(subtitle,
-                                            style: const TextStyle(
-                                                color:
-                                                Colors.black54)),
+                                        Text(subtitle, style: const TextStyle(color: Colors.black54)),
                                         const SizedBox(height: 6),
-                                        Text(
-                                          available
-                                              ? '• Stock Available'
-                                              : '• Not Available',
-                                          style: TextStyle(
-                                            color: available
-                                                ? const Color(
-                                                0xFF2E7D32)
-                                                : const Color(
-                                                0xFFC62828),
-                                            fontWeight:
-                                            FontWeight.w600,
+
+                                        // ← 实时显示该发货仓的库存数量，并判定是否可发
+                                        FutureBuilder<int>(
+                                          future: _getStockQty(
+                                            warehouseId: fromWh,
+                                            productId: productId,
                                           ),
+                                          builder: (context, stockSnap) {
+                                            final have = stockSnap.data ?? 0;
+                                            final available = have >= qtyNeed;
+                                            return Text(
+                                              available
+                                                  ? '• Stock Available  ( $have )'
+                                                  : '• Not Available  ( $have )',
+                                              style: TextStyle(
+                                                color: available
+                                                    ? const Color(0xFF2E7D32)
+                                                    : const Color(0xFFC62828),
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            );
+                                          },
                                         ),
                                       ],
                                     ),
                                   ),
-                                  Text(qty,
-                                      style: const TextStyle(
-                                          fontSize: 22,
-                                          fontWeight:
-                                          FontWeight.w900)),
+                                  Text(
+                                    '$qtyNeed',
+                                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                                  ),
                                 ],
                               ),
                               const SizedBox(height: 10),
                               Row(
                                 children: [
                                   // ✅ 只有 pending 且 _scanMode 才显示扫描状态文字
-                                  if (status == 'pending' &&
-                                      _scanMode)
+                                  if (status == 'pending' && _scanMode)
                                     Text(
-                                      scanCompleted
-                                          ? 'Completed Scan'
-                                          : 'No Complete Scan',
+                                      scanCompleted ? 'Completed Scan' : 'No Complete Scan',
                                       style: TextStyle(
                                         color: scanCompleted
-                                            ? const Color(
-                                            0xFF2E7D32)
-                                            : const Color(
-                                            0xFFD32F2F),
+                                            ? const Color(0xFF2E7D32)
+                                            : const Color(0xFFD32F2F),
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
                                   const Spacer(),
                                   // ✅ 只有 pending + _scanMode + 未完成扫描 才显示 Scan 按钮
-                                  if (status == 'pending' &&
-                                      _scanMode &&
-                                      !scanCompleted)
+                                  if (status == 'pending' && _scanMode && !scanCompleted)
                                     SizedBox(
                                       height: 32,
                                       child: OutlinedButton.icon(
-                                        icon: const Icon(
-                                            Icons.qr_code_scanner,
-                                            size: 18),
+                                        icon: const Icon(Icons.qr_code_scanner, size: 18),
                                         label: const Text('Scan'),
                                         onPressed: () async {
-                                          final code = await Navigator
-                                              .push<String?>(
+                                          final code = await Navigator.push<String?>(
                                             context,
                                             MaterialPageRoute(
-                                              builder: (_) =>
-                                              const BarcodeScanPage(),
+                                              builder: (_) => const BarcodeScanPage(),
                                             ),
                                           );
                                           if (code == null) return;
 
-                                          if (code.trim() ==
-                                              expectedBarcode
-                                                  .trim()) {
-                                            // ★ 扫码成功：记录当前批次号
+                                          if (code.trim() == expectedBarcode.trim()) {
                                             await ref.update({
-                                              'scanSessionDone':
-                                              session,
-                                              'updatedAt': FieldValue
-                                                  .serverTimestamp(),
+                                              'scanCompleted': true,
+                                              'updatedAt': FieldValue.serverTimestamp(),
                                             });
                                             if (mounted) {
-                                              ScaffoldMessenger.of(
-                                                  context)
-                                                  .showSnackBar(
+                                              ScaffoldMessenger.of(context).showSnackBar(
                                                 const SnackBar(
-                                                  content: Text(
-                                                      'Scan matched. Marked completed.'),
-                                                ),
+                                                    content: Text('Scan matched. Marked completed.')),
                                               );
                                             }
                                           } else {
                                             if (mounted) {
-                                              ScaffoldMessenger.of(
-                                                  context)
-                                                  .showSnackBar(
+                                              ScaffoldMessenger.of(context).showSnackBar(
                                                 SnackBar(
                                                   content: Text(
                                                       'Barcode not match (expected $expectedBarcode).'),
@@ -392,8 +355,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                                       ),
                                     )
                                   else
-                                    const SizedBox(
-                                        height: 18, width: 100),
+                                    const SizedBox(height: 18, width: 100),
                                 ],
                               ),
                             ],
@@ -403,65 +365,59 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                     ),
                   ),
 
-                  // 只在 pending 且存在缺货时显示提示
-                  if (status == 'pending' && anyNotAvailable)
-                    Padding(
-                      padding:
-                      const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          '* Not Available – Please restock before issuing, else reject it.',
-                          style: TextStyle(
-                              color: Colors.black.withOpacity(0.55),
-                              fontSize: 12),
-                        ),
-                      ),
+                  // ✅ 仅在 pending 且“存在任一缺货”时显示提示行（用 stocks 判断）
+                  if (status == 'pending')
+                    FutureBuilder<bool>(
+                      future: _anyNotAvailable(warehouseId: fromWh, itemDocs: docs),
+                      builder: (context, f) {
+                        if (f.data != true) return const SizedBox.shrink();
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '* Not Available – Please restock before issuing, else reject it.',
+                              style: TextStyle(color: Colors.black.withOpacity(0.55), fontSize: 12),
+                            ),
+                          ),
+                        );
+                      },
                     ),
 
-                  // ====== 底部按钮区 ======
+                  // ====== 底部按钮区（只在 pending 展示） ======
                   if (status == 'pending')
                     Container(
                       color: Colors.white,
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
                       child: Row(
                         children: [
-                          // Reject（始终可见）
+                          // Reject
                           Expanded(
                             child: OutlinedButton(
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: const Color(0xFFE53935),
-                                side: const BorderSide(
-                                    color: Color(0xFFE53935), width: 1.5),
-                                padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10)),
+                                side: const BorderSide(color: Color(0xFFE53935), width: 1.5),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                               ),
                               onPressed: () async {
                                 final ok = await _confirmDialog(
                                   context,
                                   title: 'Reject',
                                   color: const Color(0xFFE53935),
-                                  message:
-                                  'Are you sure you want to reject this request?',
+                                  message: 'Are you sure you want to reject this request?',
                                   confirmText: 'Reject',
                                   icon: Icons.cancel,
                                 );
                                 if (ok == true) {
                                   await requestDocRef.update({
                                     'status': 'rejected',
-                                    'updatedAt':
-                                    FieldValue.serverTimestamp(),
+                                    'updatedAt': FieldValue.serverTimestamp(),
                                   });
-                                  if (mounted) {
-                                    Navigator.pop(context); // 回 IssuePage
-                                  }
+                                  if (mounted) Navigator.pop(context);
                                 }
                               },
-                              child: const Text('Reject',
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.w700)),
+                              child: const Text('Reject', style: TextStyle(fontWeight: FontWeight.w700)),
                             ),
                           ),
                           const SizedBox(width: 10),
@@ -470,86 +426,75 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                           Expanded(
                             child: OutlinedButton(
                               style: OutlinedButton.styleFrom(
-                                padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10)),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                               ),
                               onPressed: () => Navigator.pop(context),
-                              child: const Text('Cancel',
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.w700)),
+                              child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w700)),
                             ),
                           ),
                           const SizedBox(width: 10),
 
-                          // Continue：
-                          // - 非扫描模式：需要 allAvailable → 自增批次 + 进入扫描模式（重置效果）
-                          // - 扫描模式：需要 allScanned → 弹确认 & 更新为 on_delivery
+                          // Continue
                           Expanded(
                             child: ElevatedButton(
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF66BB6A),
                                 foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 14),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10)),
-                                disabledBackgroundColor:
-                                Colors.grey.shade400,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                disabledBackgroundColor: Colors.grey.shade400,
                                 disabledForegroundColor: Colors.white,
                               ),
-                              onPressed: !_scanMode
-                                  ? (allAvailable
-                                  ? () async {
-                                // ★ 第一次 Continue：自增批次 → “重置完成状态”的关键
-                                final newSession =
-                                    currentSessionFromDb + 1;
-                                await requestDocRef.update({
-                                  'scanSession': newSession,
-                                  'updatedAt': FieldValue
-                                      .serverTimestamp(),
-                                });
-                                if (!mounted) return;
-                                setState(() {
-                                  _activeSession =
-                                      newSession; // 本地先行，让UI秒变
-                                  _scanMode = true;
-                                });
-                              }
-                                  : null)
-                                  : (allScanned
-                                  ? () async {
-                                final ok = await _confirmDialog(
+                              onPressed: () async {
+                                if (!_scanMode) {
+                                  // 第一次点：先检查“全部可发货” → 进入扫描模式
+                                  final ok = await _allStockAvailable(
+                                    warehouseId: fromWh,
+                                    itemDocs: docs,
+                                  );
+                                  if (!ok) {
+                                    if (!mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('Some items are not available in stock.')),
+                                    );
+                                    return;
+                                  }
+                                  setState(() => _scanMode = true);
+                                  return;
+                                }
+
+                                // 扫描模式：必须全部 scanCompleted 才能继续
+                                final allScanned = docs.isNotEmpty &&
+                                    docs.every((d) => (d.data()['scanCompleted'] ?? false) == true);
+                                if (!allScanned) {
+                                  if (!mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Please complete all scans first.')),
+                                  );
+                                  return;
+                                }
+
+                                final ok2 = await _confirmDialog(
                                   context,
                                   title: 'Confirm',
                                   color: const Color(0xFF66BB6A),
-                                  message:
-                                  'Are you sure you want to confirm the request?',
+                                  message: 'Are you sure you want to confirm the request?',
                                   confirmText: 'Confirm',
                                   icon: Icons.check_circle,
                                 );
-                                if (ok == true) {
+                                if (ok2 == true) {
                                   await requestDocRef.update({
                                     'status': 'on_delivery',
-                                    'updatedAt': FieldValue
-                                        .serverTimestamp(),
+                                    'updatedAt': FieldValue.serverTimestamp(),
                                   });
-                                  if (mounted) {
-                                    Navigator.pop(context);
-                                  }
+                                  if (mounted) Navigator.pop(context);
                                 } else {
-                                  if (mounted) {
-                                    Navigator.pop(context);
-                                  }
+                                  if (mounted) Navigator.pop(context); // 保持 pending
                                 }
-                              }
-                                  : null),
-                              child: Text(
-                                _scanMode ? 'Continue' : 'Continue',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w700),
-                              ),
+                              },
+                              child: Text(_scanMode ? 'Continue' : 'Continue',
+                                  style: const TextStyle(fontWeight: FontWeight.w700)),
                             ),
                           ),
                         ],
@@ -560,10 +505,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                   Container(
                     height: 62,
                     decoration: const BoxDecoration(color: Colors.white, boxShadow: [
-                      BoxShadow(
-                          color: Colors.black12,
-                          blurRadius: 6,
-                          offset: Offset(0, -1))
+                      BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, -1))
                     ]),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -610,8 +552,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
               ),
               child: Center(
                 child: Text(title,
-                    style:
-                    const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
               ),
             ),
             Padding(
@@ -690,10 +631,7 @@ class _Nav extends StatelessWidget {
       children: [
         Icon(icon, size: 22),
         const SizedBox(height: 2),
-        Text(label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 10),
-            maxLines: 2),
+        Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 10), maxLines: 2),
       ],
     );
   }
