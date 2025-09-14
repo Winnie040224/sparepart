@@ -2,10 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'addStockPage.dart';
-import 'createNewItem.dart';
 import 'search_page.dart';
 import 'issuePage.dart';  // ← 新增这一行
-
+import 'part_request_tabs.dart';
 /// KEEP SAME CLASS NAME
 class HomePage extends StatefulWidget {
   const HomePage({super.key, this.currentWarehouseId = 'A'});
@@ -123,7 +122,12 @@ class _HomePageState extends State<HomePage> {
             label: 'Part Request',
             icon: Icons.touch_app_outlined,
             color: _brand,
-            onTap: () => _toast('Part Request not implemented'),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PartRequestTabsPage()),
+              );
+            },
           ),
         ),
         const SizedBox(width: 16),
@@ -237,14 +241,7 @@ class _HomePageState extends State<HomePage> {
           MaterialPageRoute(builder: (_) => AddStockPage()),
         ),
       ),
-      _QuickActionData(
-        label: 'Create Item',
-        icon: Icons.new_releases_outlined,
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => CreateNewItemPage()),
-        ),
-      ),
+
       _QuickActionData(
         label: 'Logout',
         icon: Icons.logout,

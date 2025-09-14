@@ -5,13 +5,12 @@ import 'package:spacepart/issuePage.dart';
 import 'firebase_options.dart';
 
 import 'search_page.dart';
+const String kCurrentUserId = 'warehouseA';
+const String kFromWarehouseId = 'A';
 
-void main() async {
-
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform, // ← 用这里的配置
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const MyApp());
 }
 
