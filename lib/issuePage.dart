@@ -4,10 +4,11 @@ import 'orderDetail.dart';
 import 'services/issue_service.dart';
 
 class IssuePage extends StatelessWidget {
-  // 改这里：把字段从 warehouseId 改成 currentWarehouseId
-  final String currentWarehouseId; // 接收方仓库
+  /// 接收方仓库（例如 'A' / 'B'）
+  final String currentWarehouseId;
   const IssuePage({super.key, required this.currentWarehouseId});
 
+  // --- helpers ---
   String _fmtDate(dynamic v) {
     if (v == null) return '-';
     try {
@@ -21,8 +22,12 @@ class IssuePage extends StatelessWidget {
     return v.toString();
   }
 
+  // 统一把状态标准化：去空格/小写/空格转下划线
+  String _normStatus(dynamic s) =>
+      (s ?? 'pending').toString().trim().toLowerCase().replaceAll(' ', '_');
+
   (String, Color) _statusChip(dynamic status) {
-    final s = (status ?? 'pending').toString().toLowerCase();
+    final s = _normStatus(status);
     if (s == 'completed') return ('Completed', const Color(0xFF2E7D32));
     if (s == 'on_delivery') return ('On Delivery', const Color(0xFFFF8F00));
     if (s == 'rejected') return ('Reject', const Color(0xFFD32F2F));
@@ -40,44 +45,44 @@ class IssuePage extends StatelessWidget {
           foregroundColor: Colors.white,
           elevation: 0,
           title: const Text('Part Issue'),
-            bottom: const TabBar(
-              labelColor: Colors.white,               // 选中：白色
-              unselectedLabelColor: Colors.white70,   // 未选：白色 70%
-              labelStyle: TextStyle(
-                fontWeight: FontWeight.w800,
-                letterSpacing: .3,
-              ),
-              unselectedLabelStyle: TextStyle(
-                fontWeight: FontWeight.w600,
-                letterSpacing: .3,
-              ),
-              indicator: UnderlineTabIndicator(       // 指示线：白色
-                borderSide: BorderSide(width: 3, color: Colors.white),
-              ),
-              tabs: [
-                Tab(text: 'ISSUE ORDERS'),
-                Tab(text: 'HISTORY'),
-              ],
+          bottom: const TabBar(
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            labelStyle: TextStyle(fontWeight: FontWeight.w800, letterSpacing: .3),
+            unselectedLabelStyle: TextStyle(fontWeight: FontWeight.w600, letterSpacing: .3),
+            indicator: UnderlineTabIndicator(
+              borderSide: BorderSide(width: 3, color: Colors.white),
             ),
-
+            tabs: [
+              Tab(text: 'ISSUE ORDERS'),
+              Tab(text: 'HISTORY'),
+            ],
+          ),
         ),
         body: StreamBuilder<List<Map<String, dynamic>>>(
-          // 改这里：用 currentWarehouseId
+          // 只拉取 toWarehouseId == currentWarehouseId 的请求单
           stream: IssueService().watchRequests(currentWarehouseId),
           builder: (context, snap) {
-            if (snap.hasError) return Center(child: Text('Error: ${snap.error}'));
-            if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+            if (snap.hasError) {
+              return Center(child: Text('Error: ${snap.error}'));
+            }
+            if (!snap.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
             final all = snap.data!;
-            // 前端分组
+            // 前端分组（使用标准化后的状态）
             final pending = all
-                .where((m) => (m['status'] ?? 'pending').toString().toLowerCase() == 'pending')
+                .where((m) => _normStatus(m['status']) == 'pending')
                 .toList();
             final history = all
-                .where((m) => (m['status'] ?? '').toString().toLowerCase() != 'pending')
+                .where((m) => _normStatus(m['status']) != 'pending')
                 .toList();
 
             Widget buildList(List<Map<String, dynamic>> list) {
-              if (list.isEmpty) return const Center(child: Text('No data'));
+              if (list.isEmpty) {
+                return const Center(child: Text('No data'));
+              }
               return ListView.builder(
                 padding: const EdgeInsets.all(12),
                 itemCount: list.length,
@@ -105,8 +110,10 @@ class IssuePage extends StatelessWidget {
                                   style: const TextStyle(fontWeight: FontWeight.w800),
                                 ),
                               ),
-                              Text('$itemsCount Items',
-                                  style: const TextStyle(fontWeight: FontWeight.w700)),
+                              Text(
+                                '$itemsCount Items',
+                                style: const TextStyle(fontWeight: FontWeight.w700),
+                              ),
                             ],
                           ),
                           subtitle: Padding(
@@ -123,7 +130,8 @@ class IssuePage extends StatelessWidget {
                           trailing: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
+                              Text(label,
+                                  style: TextStyle(color: color, fontWeight: FontWeight.w800)),
                               const SizedBox(height: 6),
                               const Icon(Icons.chevron_right),
                             ],
@@ -145,12 +153,13 @@ class IssuePage extends StatelessWidget {
           },
         ),
 
-        // 底部导航占位
+        // 底部导航占位（与设计图一致）
         bottomNavigationBar: Container(
           height: 62,
-          decoration: const BoxDecoration(color: Colors.white, boxShadow: [
-            BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, -1))
-          ]),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, -1))],
+          ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: const [
@@ -178,7 +187,12 @@ class _Nav extends StatelessWidget {
       children: [
         Icon(icon, size: 22),
         const SizedBox(height: 2),
-        Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 10), maxLines: 2),
+        Text(
+          label,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 10),
+          maxLines: 2,
+        ),
       ],
     );
   }
