@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'addStockPage.dart';
 import 'createNewItem.dart';
 import 'search_page.dart';
+import 'issuePage.dart';  // ← 新增这一行
 
 /// KEEP SAME CLASS NAME
 class HomePage extends StatefulWidget {
@@ -131,7 +132,20 @@ class _HomePageState extends State<HomePage> {
             label: 'Part Issue',
             icon: Icons.download_outlined,
             color: _brand,
-            onTap: () => _toast('Part Issue not implemented'),
+            onTap:(){
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => IssuePage(
+                    // 如果你的 IssuePage 构造函数是：IssuePage({ required this.currentWarehouseId })
+                    currentWarehouseId: widget.currentWarehouseId,
+
+                    // 如果你的 IssuePage 构造函数是：IssuePage({ required this.warehouseId })
+                    // warehouseId: widget.currentWarehouseId,
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ],
